@@ -1,6 +1,7 @@
 Gheorghe Radu Andrei 
 
 Lefter Ionut Ciprian 
+
 Group 1105
 
 
