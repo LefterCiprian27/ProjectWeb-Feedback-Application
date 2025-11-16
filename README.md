@@ -1,3 +1,8 @@
+Gheorghe Radu Andrei 
+Lefter Ionut Ciprian 
+Group 1105
+
+
 # Project: Continuous Feedback Application
 
 This project is a Single Page Application (SPA) that allows professors to receive anonymous, real-time feedback from students during an activity (lecture, seminar, lab).
