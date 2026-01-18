@@ -6,43 +6,148 @@ const API = "http://localhost:3001";
 function fmtTime(ms) {
   return new Date(Number(ms)).toLocaleString();
 }
+
 function emojiFor(type) {
   if (type === "happy") return "🙂";
   if (type === "sad") return "🙁";
   if (type === "surprised") return "😮";
   if (type === "confused") return "😕";
-  return "❓";
+  return "—";
+}
+
+function authHeaders() {
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function readJsonSafe(res) {
+  const text = await res.text();
+  try {
+    return { json: JSON.parse(text), text };
+  } catch {
+    return { json: null, text };
+  }
 }
 
 async function apiGet(path) {
-  const res = await fetch(`${API}${path}`);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Request failed");
-  return data;
+  const res = await fetch(`${API}${path}`, {
+    headers: { ...authHeaders() }
+  });
+
+  const { json, text } = await readJsonSafe(res);
+
+  if (!res.ok) {
+    const msg = (json && (json.error || json.message)) || text || "Request failed";
+    throw new Error(msg);
+  }
+
+  if (!json) throw new Error(text || "Backend did not return JSON");
+  return json;
 }
+
 async function apiPost(path, body) {
   const res = await fetch(`${API}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body)
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Request failed");
-  return data;
+
+  const { json, text } = await readJsonSafe(res);
+
+  if (!res.ok) {
+    const msg = (json && (json.error || json.message)) || text || "Request failed";
+    throw new Error(msg);
+  }
+
+  if (!json) throw new Error(text || "Backend did not return JSON");
+  return json;
+}
+
+function saveAuth(token, user) {
+  localStorage.setItem("token", token);
+  localStorage.setItem("email", user.email || "");
+  localStorage.setItem("role", user.role || "");
+}
+
+function clearAuth() {
+  localStorage.removeItem("token");
+  localStorage.removeItem("email");
+  localStorage.removeItem("role");
 }
 
 export default function App() {
-  const socket = useMemo(() => io(API), []);
+  const [user, setUser] = useState(null);
   const [view, setView] = useState("home");
+  const [authRole, setAuthRole] = useState(null);
+  const [authMode, setAuthMode] = useState("login");
   const [quote, setQuote] = useState(null);
+  const [bootErr, setBootErr] = useState("");
+
+  const token = localStorage.getItem("token") || "";
+
+  const socket = useMemo(() => {
+    const s = io(API, { auth: { token } });
+    return s;
+  }, [token]);
 
   useEffect(() => {
     apiGet("/api/external/quote").then(setQuote).catch(() => setQuote(null));
   }, []);
 
+  useEffect(() => {
+    const t = localStorage.getItem("token");
+    if (!t) {
+      setUser(null);
+      return;
+    }
+
+    apiGet("/api/auth/me")
+      .then((me) => {
+        const u = me.user || me;
+        if (!u || !u.role) throw new Error("Invalid session");
+        setUser({ email: u.email, role: u.role });
+      })
+      .catch(() => {
+        clearAuth();
+        setUser(null);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (user) setView(user.role === "professor" ? "prof" : "stud");
+    if (!user) setView("home");
+  }, [user]);
+
+  function logout() {
+    clearAuth();
+    setUser(null);
+    setAuthRole(null);
+    setAuthMode("login");
+    setView("home");
+  }
+
+  function onAuthSuccess(payload) {
+    const token = payload.token;
+    const u = payload.user || payload;
+    if (!token || !u) throw new Error("Invalid auth response");
+    saveAuth(token, u);
+    setUser({ email: u.email, role: u.role });
+    setBootErr("");
+  }
+
   return (
     <div className="container">
-      <h1>Continuous Feedback</h1>
+      <div className="topbar">
+        <h1>Continuous Feedback</h1>
+        {user && (
+          <div className="row">
+            <div className="small">
+              {user.email} ({user.role})
+            </div>
+            <button onClick={logout}>Logout</button>
+          </div>
+        )}
+      </div>
 
       {quote && (
         <div className="card">
@@ -52,17 +157,100 @@ export default function App() {
         </div>
       )}
 
-      {view === "home" && (
+      {bootErr && <div className="err">{bootErr}</div>}
+
+      {!user && view === "home" && (
         <div className="card">
+          <h2>Choose role</h2>
           <div className="row">
-            <button onClick={() => setView("prof")}>Professor</button>
-            <button onClick={() => setView("stud")}>Student</button>
+            <button
+              onClick={() => {
+                setAuthRole("professor");
+                setAuthMode("login");
+                setView("auth");
+              }}
+            >
+              Professor
+            </button>
+            <button
+              onClick={() => {
+                setAuthRole("student");
+                setAuthMode("login");
+                setView("auth");
+              }}
+            >
+              Student
+            </button>
           </div>
         </div>
       )}
 
-      {view === "prof" && <Professor socket={socket} onHome={() => setView("home")} />}
-      {view === "stud" && <Student socket={socket} onHome={() => setView("home")} />}
+      {!user && view === "auth" && (
+        <Auth
+          role={authRole}
+          mode={authMode}
+          onMode={(m) => setAuthMode(m)}
+          onBack={() => {
+            setView("home");
+            setAuthRole(null);
+            setAuthMode("login");
+          }}
+          onSuccess={(payload) => {
+            try {
+              onAuthSuccess(payload);
+            } catch (e) {
+              setBootErr(e.message || "Auth error");
+            }
+          }}
+        />
+      )}
+
+      {user && view === "prof" && <Professor socket={socket} onHome={() => setView("prof")} />}
+      {user && view === "stud" && <Student socket={socket} onHome={() => setView("stud")} />}
+    </div>
+  );
+}
+
+function Auth({ role, mode, onMode, onBack, onSuccess }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+
+  async function submit() {
+    setErr("");
+    if (!role) throw new Error("Missing role");
+
+    if (mode === "login") {
+      const res = await apiPost("/api/auth/login", { email: email.trim(), password });
+      onSuccess(res);
+      return;
+    }
+
+    const res = await apiPost("/api/auth/register", { email: email.trim(), password, role });
+    onSuccess(res);
+  }
+
+  return (
+    <div className="card">
+      <h2>{role === "professor" ? "Professor" : "Student"} {mode === "login" ? "login" : "register"}</h2>
+
+      <label>Email</label>
+      <input value={email} onChange={(e) => setEmail(e.target.value)} />
+
+      <label>Password</label>
+      <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+
+      <div className="row">
+        <button onClick={() => submit().catch((e) => setErr(e.message))}>
+          {mode === "login" ? "Login" : "Register"}
+        </button>
+        <button onClick={() => onMode(mode === "login" ? "register" : "login")}>
+          {mode === "login" ? "Register" : "Back to login"}
+        </button>
+        <button onClick={onBack}>Back</button>
+      </div>
+
+      {err && <div className="err">{err}</div>}
     </div>
   );
 }
@@ -78,7 +266,7 @@ function Professor({ socket, onHome }) {
   }
 
   useEffect(() => {
-    if (mode === "list") loadActivities();
+    if (mode === "list") loadActivities().catch(() => {});
   }, [mode]);
 
   return (
@@ -86,7 +274,7 @@ function Professor({ socket, onHome }) {
       <div className="row">
         <button onClick={() => setMode("create")}>Create</button>
         <button onClick={() => setMode("list")}>All activities</button>
-        <button onClick={onHome}>Home</button>
+        
       </div>
 
       {mode === "create" && (
@@ -106,7 +294,7 @@ function Professor({ socket, onHome }) {
               <div>
                 <b>{a.title}</b> — {a.description}
                 <br />
-                Code: <b>{a.code}</b> | Active: {a.active ? "YES" : "NO"} | Feedback: {a.feedbackCount}
+                Code: <b>{a.code}</b> | Active: {a.active ? "YES" : "NO"}
                 <br />
                 {fmtTime(a.startsAt)} → {fmtTime(a.endsAt)}
               </div>
@@ -120,6 +308,7 @@ function Professor({ socket, onHome }) {
               </button>
             </div>
           ))}
+          {activities.length === 0 && <div className="small">No activities yet.</div>}
         </div>
       )}
 
@@ -145,13 +334,14 @@ function ProfessorCreate({ onOpen }) {
     setMsg("");
     const startsAt = start ? new Date(start).getTime() : NaN;
     const endsAt = end ? new Date(end).getTime() : NaN;
+
     const act = await apiPost("/api/activities", {
       title: title.trim(),
       description: description.trim(),
       startsAt,
       endsAt
     });
-    setMsg(`Created. Code: ${act.code}`);
+
     onOpen(act.code);
   }
 
@@ -175,7 +365,7 @@ function ProfessorCreate({ onOpen }) {
         <button onClick={() => create().catch((e) => setMsg(e.message))}>Create</button>
       </div>
 
-      {msg && <div>{msg}</div>}
+      {msg && <div className="err">{msg}</div>}
     </div>
   );
 }
@@ -187,7 +377,7 @@ function ProfessorDashboard({ socket, code, onBack }) {
   const [items, setItems] = useState([]);
 
   useEffect(() => {
-    socket.emit("joinActivity", { code: c, role: "professor" });
+    socket.emit("joinActivity", { code: c });
   }, [c, socket]);
 
   async function loadHistory() {
@@ -250,13 +440,32 @@ function Student({ socket, onHome }) {
   const [joined, setJoined] = useState(false);
   const [status, setStatus] = useState("");
 
+  const [myActs, setMyActs] = useState([]);
+  const [mySummary, setMySummary] = useState({});
+  const [myErr, setMyErr] = useState("");
+
+  const [showMyActivities, setShowMyActivities] = useState(false);
+
+  async function loadMyActivities() {
+    setMyErr("");
+    setShowMyActivities(true);
+
+    const acts = await apiGet("/api/activities");
+    setMyActs(acts);
+
+    const sum = await apiGet("/api/feedback/mine/summary");
+    const m = {};
+    for (const s of sum) m[s.code] = s;
+    setMySummary(m);
+  }
+
   async function join() {
     setMsg("");
     setStatus("");
     const c = code.trim().toUpperCase();
     const act = await apiGet(`/api/activities/${c}`);
     if (!act.active) throw new Error("Activity is not active. Students can join only during the time window.");
-    socket.emit("joinActivity", { code: c, role: "student" });
+    socket.emit("joinActivity", { code: c });
     setJoined(true);
   }
 
@@ -270,15 +479,39 @@ function Student({ socket, onHome }) {
 
   function send(type) {
     const c = code.trim().toUpperCase();
+    if (mySummary[c]) {
+      setStatus("You already reacted to this activity.");
+      return;
+    }
     socket.emit("sendReaction", { code: c, type });
-    setStatus(`Sent ${emojiFor(type)} at ${fmtTime(Date.now())}`);
+    setStatus("Reaction sent.");
+    setMySummary((prev) => ({ ...prev, [c]: { code: c, type, ts: Date.now() } }));
   }
+
+  const currentCode = code.trim().toUpperCase();
+  const alreadyReacted = !!mySummary[currentCode];
 
   return (
     <>
       <div className="row">
-        <button onClick={onHome}>Home</button>
+        <button
+          onClick={() => {
+            setShowMyActivities(false);
+            setJoined(false);
+            setStatus("");
+            setMsg("");
+            onHome();
+          }}
+        >
+          Home
+        </button>
+
+        <button onClick={() => loadMyActivities().catch((e) => setMyErr(e.message))}>
+          My activities
+        </button>
       </div>
+
+      {myErr && <div className="err">{myErr}</div>}
 
       {!joined && (
         <div className="card">
@@ -292,15 +525,49 @@ function Student({ socket, onHome }) {
         </div>
       )}
 
+      {showMyActivities && (
+        <div className="card">
+          <h2>My rated activities</h2>
+          {myActs.length === 0 ? (
+            <div className="small">No rated activities yet. Join an activity and react once.</div>
+          ) : (
+            myActs.map((a) => {
+              const s = mySummary[a.code];
+              const emoji = s ? emojiFor(s.type) : "—";
+              return (
+                <div className="item" key={a.code}>
+                  <div>
+                    <b>{a.title}</b> — {a.description}
+                    <br />
+                    Code: <b>{a.code}</b> | Active: {a.active ? "YES" : "NO"}
+                    <br />
+                    Your reaction: <span style={{ fontSize: "22px" }}>{emoji}</span>
+                  </div>
+                 
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
       {joined && (
         <div className="card">
-          <h2>{code.trim().toUpperCase()}</h2>
-          <div className="grid4">
-            <button onClick={() => send("happy")}>🙂</button>
-            <button onClick={() => send("sad")}>🙁</button>
-            <button onClick={() => send("surprised")}>😮</button>
-            <button onClick={() => send("confused")}>😕</button>
-          </div>
+          <h2>{currentCode}</h2>
+
+          {alreadyReacted ? (
+            <div className="small">
+              You already reacted: <b>{emojiFor(mySummary[currentCode].type)}</b>
+            </div>
+          ) : (
+            <div className="grid4">
+              <button onClick={() => send("happy")}>🙂</button>
+              <button onClick={() => send("sad")}>🙁</button>
+              <button onClick={() => send("surprised")}>😮</button>
+              <button onClick={() => send("confused")}>😕</button>
+            </div>
+          )}
+
           {status && <div>{status}</div>}
         </div>
       )}

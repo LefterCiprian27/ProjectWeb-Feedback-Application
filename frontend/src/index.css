@@ -11,3 +11,6 @@ button { padding: 10px 14px; border-radius: 10px; border: 1px solid #ddd; backgr
 .feedItem { display:flex; justify-content:space-between; padding: 8px 0; border-bottom: 1px solid #eee; }
 .err { color: #b00; }
 .small { font-size: 12px; opacity: .8; }
+
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.topbarRight { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
